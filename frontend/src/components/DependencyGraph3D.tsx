@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import ForceGraph3D from '3d-force-graph';
 
 interface GraphData {
@@ -8,9 +8,65 @@ interface GraphData {
 
 export const DependencyGraph3D: React.FC<{ data: GraphData }> = ({ data }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<any>(null);
   const [selectedNode, setSelectedNode] = useState<any>(null);
+  const [hoverNode, setHoverNode] = useState<any>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [analyzing, setAiAnalyzing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filters, setFilters] = useState({
+    VERIFIED: true,
+    BROKEN: true,
+    WARNING: true,
+    EXTERNAL_PACKAGE: true
+  });
+
+  // O(1) Adjacency Map Pre-computation
+  const processedData = useMemo(() => {
+    if (!data) return { nodes: [], links: [] };
+
+    // Filter nodes based on state
+    const filteredNodes = data.nodes.filter(node => {
+      if (node.kind === 'EXTERNAL_PACKAGE') return filters.EXTERNAL_PACKAGE;
+      return filters[node.status as keyof typeof filters] !== false;
+    });
+
+    const nodeIds = new Set(filteredNodes.map(n => n.id));
+
+    // Filter edges to only include visible nodes
+    const filteredEdges = data.edges.filter(edge => 
+      nodeIds.has(edge.source) && nodeIds.has(edge.target)
+    );
+
+    const nodes = filteredNodes.map(node => ({
+      ...node,
+      name: node.label,
+      neighbors: new Set<string>(),
+      links: [] as any[]
+    }));
+
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+    filteredEdges.forEach(edge => {
+      const s = nodeMap.get(edge.source);
+      const t = nodeMap.get(edge.target);
+      if (s && t) {
+        s.neighbors.add(t.id);
+        t.neighbors.add(s.id);
+        s.links.push(edge);
+        t.links.push(edge);
+      }
+    });
+
+    return { 
+      nodes, 
+      links: filteredEdges.map(edge => ({
+        ...edge,
+        source: edge.source,
+        target: edge.target
+      }))
+    };
+  }, [data, filters]);
 
   const analyzeWithAI = async (violationId: string) => {
     setAiAnalyzing(true);
@@ -31,47 +87,73 @@ export const DependencyGraph3D: React.FC<{ data: GraphData }> = ({ data }) => {
   };
 
   useEffect(() => {
-    if (!containerRef.current || !data) return;
+    if (!containerRef.current || !processedData.nodes.length) return;
 
+    // Transform backend contract into 3D Scene Graph layout
     const sceneData = {
-      nodes: data.nodes.map(node => ({
-        id: node.id,
-        name: node.label,
+      nodes: processedData.nodes.map(node => ({
+        ...node,
         val: node.kind === 'FOLDER' || node.kind === 'PROJECT' ? 20 : 5,
-        color: getNodeColor(node.status, node.kind),
-        kind: node.kind,
-        status: node.status,
-        path: node.path
+        color: getNodeColor(node.status, node.kind)
       })),
-      links: data.edges.map(edge => ({
-        source: edge.source,
-        target: edge.target,
+      links: processedData.links.map(edge => ({
+        ...edge,
         color: edge.status === 'BROKEN' ? '#ff4d4d' : '#4a5568',
         width: edge.status === 'BROKEN' ? 2 : 0.5
       }))
     };
 
+    // Initialize the 3D Engine
     const Graph = ForceGraph3D()(containerRef.current)
       .graphData(sceneData)
-      .nodeColor('color')
+      .nodeColor(node => {
+        const n = node as any;
+        if (selectedNode || hoverNode) {
+          const isNeighbor = (selectedNode?.neighbors?.has(n.id)) || (hoverNode?.neighbors?.has(n.id));
+          const isSelected = selectedNode?.id === n.id || hoverNode?.id === n.id;
+          return isSelected || isNeighbor ? n.color : 'rgba(63, 63, 70, 0.2)';
+        }
+        return n.color;
+      })
+      .linkColor(link => {
+        const l = link as any;
+        if (selectedNode || hoverNode) {
+          const isRelated = selectedNode?.id === l.source.id || selectedNode?.id === l.target.id ||
+                           hoverNode?.id === l.source.id || hoverNode?.id === l.target.id;
+          return isRelated ? l.color : 'rgba(63, 63, 70, 0.1)';
+        }
+        return l.color;
+      })
       .nodeVal('val')
-      .linkSource('source')
-      .linkTarget('target')
-      .linkColor('color')
-      .linkWidth('width')
+      .linkWidth(link => {
+        const l = link as any;
+        if (selectedNode || hoverNode) {
+          const isRelated = selectedNode?.id === l.source.id || selectedNode?.id === l.target.id ||
+                           hoverNode?.id === l.source.id || hoverNode?.id === l.target.id;
+          return isRelated ? (l.width * 2) : 0.2;
+        }
+        return l.width;
+      })
       .linkOpacity(0.6)
       .nodeLabel(node => `[${(node as any).kind}] ${(node as any).name}`)
       .onNodeClick(node => {
-        setSelectedNode(node);
+        const n = node as any;
+        setSelectedNode(n);
         setAiAnalysis(null);
-        const distance = 40;
-        const distRatio = 1 + distance / Math.hypot((node as any).x || 0, (node as any).y || 0, (node as any).z || 0);
+        // Camera focus tracking on selected node
+        const distance = 60;
+        const distRatio = 1 + distance / Math.hypot(n.x || 0, n.y || 0, n.z || 0);
         Graph.cameraPosition(
-          { x: (node as any).x * distRatio, y: (node as any).y * distRatio, z: (node as any).z * distRatio },
-          node as any,
+          { x: n.x * distRatio, y: n.y * distRatio, z: n.z * distRatio },
+          n,
           1000
         );
+      })
+      .onNodeHover(node => {
+        setHoverNode(node || null);
       });
+
+    graphRef.current = Graph;
 
     const handleResize = () => {
       Graph.width(containerRef.current?.clientWidth || window.innerWidth);
@@ -83,7 +165,7 @@ export const DependencyGraph3D: React.FC<{ data: GraphData }> = ({ data }) => {
       window.removeEventListener('resize', handleResize);
       containerRef.current!.innerHTML = '';
     };
-  }, [data]);
+  }, [processedData, selectedNode, hoverNode]);
 
   function getNodeColor(status: string, kind: string): string {
     if (kind === 'PROJECT') return '#a855f7';
@@ -103,10 +185,73 @@ export const DependencyGraph3D: React.FC<{ data: GraphData }> = ({ data }) => {
     setAiAnalysis(null);
   };
 
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const match = processedData.nodes.find(n => 
+      n.label.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    if (match && graphRef.current) {
+      setSelectedNode(match);
+      const distance = 80;
+      const distRatio = 1 + distance / Math.hypot(match.x || 0, match.y || 0, match.z || 0);
+      graphRef.current.cameraPosition(
+        { x: (match.x || 0) * distRatio, y: (match.y || 0) * distRatio, z: (match.z || 0) * distRatio },
+        match,
+        1500
+      );
+    }
+  };
+
   return (
-    <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
+    <div style={{ width: '100%', height: '100vh', position: 'relative', background: '#09090b' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* TOP-LEFT SEARCH HUD */}
+      <div style={{
+        position: 'absolute', top: '80px', left: '15px', zIndex: 10,
+        width: '280px'
+      }}>
+        <form onSubmit={handleSearch}>
+          <input 
+            type="text" 
+            placeholder="Search nodes (e.g. auth.py)..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              width: '100%', background: 'rgba(24, 24, 27, 0.8)', 
+              border: '1px solid #27272a', borderRadius: '6px',
+              padding: '10px 15px', color: '#fff', outline: 'none',
+              fontFamily: 'monospace'
+            }}
+          />
+        </form>
+      </div>
+
+      {/* BOTTOM-LEFT FILTER LEGEND */}
+      <div style={{
+        position: 'absolute', bottom: '20px', left: '20px', zIndex: 10,
+        background: 'rgba(24, 24, 27, 0.85)', backdropFilter: 'blur(4px)',
+        padding: '15px', borderRadius: '8px', border: '1px solid #27272a',
+        color: '#f4f4f5', fontFamily: 'monospace', width: '220px'
+      }}>
+        <div style={{ marginBottom: '10px', fontSize: '12px', color: '#71717a' }}>FILTERS</div>
+        {(['VERIFIED', 'BROKEN', 'WARNING', 'EXTERNAL_PACKAGE'] as const).map(f => (
+          <label key={f} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', cursor: 'pointer' }}>
+            <input 
+              type="checkbox" 
+              checked={filters[f]} 
+              onChange={() => setFilters(prev => ({ ...prev, [f]: !prev[f] }))}
+              style={{ marginRight: '10px' }}
+            />
+            <span style={{ fontSize: '13px', color: filters[f] ? '#fff' : '#52525b' }}>
+              <span style={{ color: getNodeColor(f, f === 'EXTERNAL_PACKAGE' ? f : 'FILE'), marginRight: '6px' }}>●</span>
+              {f.replace('_', ' ')}
+            </span>
+          </label>
+        ))}
+      </div>
       
+      {/* Node Inspector HUD Layer */}
       {selectedNode && (
         <div style={{
           position: 'absolute', bottom: '20px', right: '20px', 
