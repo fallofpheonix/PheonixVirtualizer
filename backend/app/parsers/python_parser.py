@@ -50,13 +50,46 @@ class PythonParser(BaseParser):
         )
 
     def _traverse(self, node, imports, exports, symbols):
-        # This is a placeholder for a more robust query-based approach
+        # Enhanced traversal for imports and exports
         if node.type == 'import_from_statement':
-            # from X import Y
+            # from X import Y, Z
             module_node = node.child_by_field_name('module_name')
             if module_node:
                 module_name = module_node.text.decode('utf8')
-                imports.append(ImportSymbol(source=module_name, range=self._get_range(node)))
+                
+                # Extract specific imported symbols
+                imported_names = []
+                # Looking for 'dotted_name' or 'aliased_import' children
+                for child in node.children:
+                    if child.type == 'aliased_import':
+                        name_node = child.child_by_field_name('name')
+                        if name_node:
+                            imported_names.append(name_node.text.decode('utf8'))
+                    elif child.type == 'dotted_name' and child.prev_sibling and child.prev_sibling.type == 'import':
+                        # This matches the names after 'import'
+                        imported_names.append(child.text.decode('utf8'))
+                    elif child.type == 'wildcard_import':
+                        imported_names.append('*')
+
+                # Re-check for 'import' keyword to find siblings
+                import_found = False
+                for child in node.children:
+                    if child.type == 'import':
+                        import_found = True
+                        continue
+                    if import_found:
+                        if child.type == 'dotted_name':
+                            imported_names.append(child.text.decode('utf8'))
+                        elif child.type == 'aliased_import':
+                            name_node = child.child_by_field_name('name')
+                            if name_node:
+                                imported_names.append(name_node.text.decode('utf8'))
+
+                imports.append(ImportSymbol(
+                    source=module_name, 
+                    imported=list(set(imported_names)), 
+                    range=self._get_range(node)
+                ))
         elif node.type == 'import_statement':
             # import X
             for child in node.children:

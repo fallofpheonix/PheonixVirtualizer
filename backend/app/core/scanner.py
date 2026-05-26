@@ -4,13 +4,18 @@ from typing import List, Dict
 from ..models.types import GraphNode, NodeKind, NodeStatus
 
 class RepositoryScanner:
+    IGNORE_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
+    IGNORE_FILES = {'.DS_Store', 'dependency_graph.json', 'graph.db'}
+
     def __init__(self, root_path: str):
         self.root_path = os.path.abspath(root_path)
 
     def scan(self) -> List[GraphNode]:
         nodes = []
         for root, dirs, files in os.walk(self.root_path):
-            # Create node for the current directory
+            # Prune ignored directories in-place to stop os.walk from entering them
+            dirs[:] = [d for d in dirs if d not in self.IGNORE_DIRS]
+            
             rel_root = os.path.relpath(root, self.root_path)
             if rel_root == ".":
                 parent_id = None

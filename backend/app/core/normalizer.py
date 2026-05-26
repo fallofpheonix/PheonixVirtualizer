@@ -8,7 +8,7 @@ from ..models.types import (
 class Normalizer:
     def __init__(self, project_root: str):
         self.project_root = os.path.abspath(project_root)
-        self.symbol_table: Dict[str, List[str]] = {} # file_path -> list of exported symbols
+        self.symbol_table: Dict[str, Set[str]] = {} # file_path -> set of exported symbol names
         self.nodes: Dict[str, GraphNode] = {}
         self.edges: List[GraphEdge] = []
 
@@ -17,24 +17,66 @@ class Normalizer:
             self.nodes[node.id] = node
 
     def process_parse_result(self, result: ParseResult):
-        # Update symbol table
-        self.symbol_table[result.path] = [e.name for e in result.exports]
+        # Update global symbol table with exports from this file
+        self.symbol_table[result.path] = {e.name for e in result.exports}
         
         # Resolve imports
         for imp in result.imports:
             target_path = self._resolve_path(result.path, imp.source)
+            
             if target_path:
+                # INTERNAL DEPENDENCY
                 edge_id = f"{result.path}->{target_path}"
+                status = NodeStatus.VERIFIED
+                if imp.imported:
+                    if target_path in self.symbol_table:
+                        valid_exports = self.symbol_table[target_path]
+                        missing_symbols = [sym for sym in imp.imported if sym not in valid_exports]
+                        if missing_symbols:
+                            status = NodeStatus.BROKEN
+                
                 self.edges.append(GraphEdge(
                     id=edge_id,
                     source=result.path,
                     target=target_path,
                     relationType=RelationType.IMPORTS,
-                    status=NodeStatus.VERIFIED if target_path in self.nodes else NodeStatus.BROKEN
+                    status=status if target_path in self.nodes else NodeStatus.BROKEN,
+                    metadata={"imported_symbols": imp.imported, "external": False}
                 ))
             else:
-                # Unresolved or broken path
-                pass
+                # EXTERNAL OR UNRESOLVED
+                # Heuristic: if it doesn't look like a relative path, treat as external
+                if not imp.source.startswith('.'):
+                    # EXTERNAL PACKAGE (e.g., 'os', 'fastapi', 'react')
+                    package_id = f"pkg:{imp.source}"
+                    if package_id not in self.nodes:
+                        self.nodes[package_id] = GraphNode(
+                            id=package_id,
+                            kind=NodeKind.EXTERNAL_PACKAGE,
+                            label=imp.source,
+                            status=NodeStatus.VERIFIED, # Assume external packages exist for now
+                            metadata={"is_external": True}
+                        )
+                    
+                    self.edges.append(GraphEdge(
+                        id=f"{result.path}->{package_id}",
+                        source=result.path,
+                        target=package_id,
+                        relationType=RelationType.IMPORTS,
+                        status=NodeStatus.VERIFIED,
+                        metadata={"imported_symbols": imp.imported, "external": True}
+                    ))
+                else:
+                    # BROKEN INTERNAL RELATIVE IMPORT
+                    edge_id = f"{result.path}->broken:{imp.source}"
+                    self.edges.append(GraphEdge(
+                        id=edge_id,
+                        source=result.path,
+                        target=edge_id, # Self-pointing for broken for now
+                        relationType=RelationType.IMPORTS,
+                        status=NodeStatus.BROKEN,
+                        metadata={"imported_symbols": imp.imported, "external": False, "raw_source": imp.source}
+                    ))
 
     def _resolve_path(self, source_path: str, import_source: str) -> Optional[str]:
         # Basic resolution logic
