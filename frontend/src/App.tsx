@@ -6,9 +6,8 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // For local-only velocity, we can try to fetch the latest dump from the backend
-    // Or just use the one exported in the public folder for now.
-    fetch('/api/job/latest/macro') // Placeholder for the actual API call
+    // 1. Initial Load from API
+    fetch('/api/job/latest/macro')
       .then(res => res.json())
       .then(data => {
         setGraphData(data);
@@ -16,7 +15,6 @@ function App() {
       })
       .catch(err => {
         console.error("Error loading graph:", err);
-        // Fallback to static file if API fails
         fetch('/dependency_graph.json')
           .then(res => res.json())
           .then(data => {
@@ -24,6 +22,18 @@ function App() {
             setLoading(false);
           });
       });
+
+    // 2. Setup WebSocket for Live Updates
+    const ws = new WebSocket(`ws://${window.location.host}/ws`);
+    ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === 'GRAPH_UPDATE') {
+        console.log("Received live graph update from server");
+        setGraphData(message.data);
+      }
+    };
+
+    return () => ws.close();
   }, []);
 
   if (loading) {
