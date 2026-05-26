@@ -58,6 +58,18 @@ class Violation(BaseModel):
     range: Optional[SourceRange] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+class CustomRule(BaseModel):
+    id: str
+    severity: ViolationSeverity = ViolationSeverity.high
+    message: str
+    from_path: Optional[str] = None # Regex or substring
+    to_path: Optional[str] = None   # Regex or substring
+    action: str = "DENY" # Currently only DENY supported
+
+class PheonixConfig(BaseModel):
+    project_name: Optional[str] = None
+    rules: List[CustomRule] = Field(default_factory=list)
+
 class ParseError(BaseModel):
     message: str
     range: Optional[SourceRange] = None

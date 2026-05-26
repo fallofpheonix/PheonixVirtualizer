@@ -1,0 +1,8 @@
+project_name: "PheonixVirtualizer"
+rules:
+  - id: "parsers-boundary"
+    severity: "high"
+    message: "Parser layer should not depend on Core orchestrator logic to prevent circular coupling."
+    from_path: "backend/app/parsers/"
+    to_path: "backend/app/core/"
+    action: "DENY"

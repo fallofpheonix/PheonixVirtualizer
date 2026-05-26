@@ -6,6 +6,7 @@ from .scanner import RepositoryScanner
 from .normalizer import Normalizer
 from .rules import RuleEngine
 from .database import Database
+from .config_loader import ConfigLoader
 from ..parsers.factory import ParserFactory
 from ..models.types import ParseRequest, NormalizedGraph, ParseResult
 
@@ -40,9 +41,10 @@ def _parse_file_worker(file_info: Dict[str, Any], project_root: str) -> Optional
 class Orchestrator:
     def __init__(self, project_root: str):
         self.project_root = os.path.abspath(project_root)
+        self.config = ConfigLoader.load_config(self.project_root)
         self.scanner = RepositoryScanner(self.project_root)
         self.normalizer = Normalizer(self.project_root)
-        self.rule_engine = RuleEngine()
+        self.rule_engine = RuleEngine(self.config)
         self.db = Database()
 
     def analyze(self) -> NormalizedGraph:
