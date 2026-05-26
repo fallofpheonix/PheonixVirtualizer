@@ -55,7 +55,13 @@ class Orchestrator:
 
         # Prepare tasks for workers
         tasks = []
-        lang_map = {'.py': 'python', '.js': 'javascript', '.ts': 'typescript'}
+        lang_map = {
+            '.py': 'python', 
+            '.js': 'javascript', 
+            '.ts': 'typescript',
+            '.tsx': 'typescript',
+            '.go': 'go'
+        }
         for file_node in file_nodes:
             ext = os.path.splitext(file_node.label)[1].lower()
             lang = lang_map.get(ext)

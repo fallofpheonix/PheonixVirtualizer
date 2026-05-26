@@ -2,12 +2,16 @@ from typing import List, Optional
 from .base import BaseParser
 from .python_parser import PythonParser
 from .javascript_parser import JavaScriptParser
+from .typescript_parser import TypeScriptParser
+from .go_parser import GoParser
 
 class ParserFactory:
     def __init__(self):
         self.parsers: List[BaseParser] = [
             PythonParser(),
-            JavaScriptParser()
+            JavaScriptParser(),
+            TypeScriptParser(),
+            GoParser()
         ]
 
     def get_parser(self, language: str) -> Optional[BaseParser]:
@@ -17,4 +21,4 @@ class ParserFactory:
         return None
 
     def get_supported_languages(self) -> List[str]:
-        return ["python", "javascript"]
+        return ["python", "javascript", "typescript", "go"]
