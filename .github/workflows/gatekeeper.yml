@@ -1,0 +1,36 @@
+name: PheonixVirtualizer Gatekeeper
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+
+      - name: Run PheonixVirtualizer Analysis
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          python backend/cli.py --path . --fail-on high --json
+
+      - name: Upload Analysis Report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: pheonix-analysis-report
+          path: analysis_report.json
