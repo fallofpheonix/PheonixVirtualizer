@@ -1,0 +1,9 @@
+fastapi==0.111.0
+uvicorn==0.30.1
+pydantic==2.7.4
+tree-sitter==0.21.3
+tree-sitter-languages==1.10.2
+networkx==3.3
+watchdog==4.0.1
+python-multipart==0.0.9
+aiofiles==23.2.1
