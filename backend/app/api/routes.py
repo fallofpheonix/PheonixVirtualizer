@@ -4,6 +4,7 @@ import uuid
 import os
 from ..core.orchestrator import Orchestrator
 from ..models.types import NormalizedGraph, NodeKind
+from ..services.ai_reasoning import ai_reasoning_service
 
 router = APIRouter()
 
@@ -92,3 +93,26 @@ async def get_micro_graph(job_id: str, file_id: str):
         "nodes": micro_nodes,
         "edges": micro_edges
     }
+
+@router.post("/job/{job_id}/analyze-violation/{violation_id}")
+async def analyze_violation_with_ai(job_id: str, violation_id: str):
+    if job_id not in jobs or jobs[job_id]["status"] != "complete":
+        raise HTTPException(status_code=404, detail="Job not found or processing")
+
+    full_graph: NormalizedGraph = jobs[job_id]["graph"]
+    
+    # Find the violation
+    violation = next((v for v in full_graph.violations if v.id == violation_id), None)
+    if not violation:
+        # Fallback: check if the provided ID is actually a node ID involved in a violation
+        violation = next((v for v in full_graph.violations if violation_id in v.sourceNodeIds), None)
+    
+    if not violation:
+        raise HTTPException(status_code=404, detail="Violation not found for this identifier")
+
+    # Find affected nodes
+    affected_nodes = [n for n in full_graph.nodes if n.id in violation.sourceNodeIds]
+    
+    analysis = await ai_reasoning_service.analyze_violation(violation, affected_nodes)
+    
+    return {"analysis": analysis}
