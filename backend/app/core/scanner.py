@@ -48,19 +48,23 @@ class RepositoryScanner:
                 file_path = os.path.join(root, file)
                 rel_file_path = os.path.relpath(file_path, self.root_path)
                 
-                nodes.append(GraphNode(
-                    id=rel_file_path,
-                    kind=NodeKind.FILE,
-                    label=file,
-                    path=rel_file_path,
-                    parentId=folder_id if rel_root != "." else "root",
-                    status=NodeStatus.UNRESOLVED,
-                    size=os.path.getsize(file_path),
-                    metadata={
-                        "extension": os.path.splitext(file)[1],
-                        "mtime": os.path.getmtime(file_path)
-                    }
-                ))
+                try:
+                    nodes.append(GraphNode(
+                        id=rel_file_path,
+                        kind=NodeKind.FILE,
+                        label=file,
+                        path=rel_file_path,
+                        parentId=folder_id if rel_root != "." else "root",
+                        status=NodeStatus.UNRESOLVED,
+                        size=os.path.getsize(file_path),
+                        metadata={
+                            "extension": os.path.splitext(file)[1],
+                            "mtime": os.path.getmtime(file_path)
+                        }
+                    ))
+                except (FileNotFoundError, OSError):
+                    # Skip files that can't be accessed (e.g. broken symlinks)
+                    continue
         
         return nodes
 
