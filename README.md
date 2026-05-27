@@ -94,7 +94,7 @@ To support massive codebases, we utilize **Level of Detail (LOD) Scaling**:
 *   **Parser Accuracy:** >98% (verified via Golden Dataset suite).
 *   **Latency:** <5 seconds for typical repositories (1,000 files).
 *   **Governance:** Strict enforcement via custom rule engine.
-*   **Reliability:** Self-verifying via continuous regression testing.
+*   **Reliability:** Self-verifying via continuous regression testing and stress-tested against 7,000+ node legacy repositories (e.g., handling broken symlinks and cross-language microservices).
 
 ---
 
