@@ -80,5 +80,13 @@ class RuleEngine:
                 status="active",
                 metadata={"cycle": cycle}
             ))
+
+            # Mark edges in cycle as WARNING in the original graph
+            for j in range(len(cycle)):
+                source = cycle[j]
+                target = cycle[(j + 1) % len(cycle)]
+                cycle_edge = next((e for e in graph.edges if e.source == source and e.target == target), None)
+                if cycle_edge:
+                    cycle_edge.status = NodeStatus.WARNING
         
         return violations

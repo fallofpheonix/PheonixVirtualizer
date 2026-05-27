@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Set
 from ..models.types import (
     NormalizedGraph, GraphNode, GraphEdge, NodeKind, 
     NodeStatus, ParseResult, RelationType, ImportSymbol
@@ -22,7 +22,7 @@ class Normalizer:
         
         # Resolve imports
         for imp in result.imports:
-            target_path = self._resolve_path(result.path, imp.source)
+            target_path, candidates = self._resolve_path(result.path, imp.source)
             
             if target_path:
                 # INTERNAL DEPENDENCY
@@ -75,10 +75,18 @@ class Normalizer:
                         target=edge_id, # Self-pointing for broken for now
                         relationType=RelationType.IMPORTS,
                         status=NodeStatus.BROKEN,
-                        metadata={"imported_symbols": imp.imported, "external": False, "raw_source": imp.source}
+                        metadata={
+                            "imported_symbols": imp.imported, 
+                            "external": False, 
+                            "raw_source": imp.source,
+                            "diagnostic": {
+                                "error": "ERR_PATH_RESOLVE",
+                                "candidates_tried": candidates
+                            }
+                        }
                     ))
 
-    def _resolve_path(self, source_path: str, import_source: str) -> Optional[str]:
+    def _resolve_path(self, source_path: str, import_source: str) -> Tuple[Optional[str], List[str]]:
         # Basic resolution logic
         source_dir_rel = os.path.dirname(source_path)
         
@@ -108,7 +116,7 @@ class Normalizer:
         candidates = [
             potential_rel_path + ".py",
             os.path.join(potential_rel_path, "__init__.py"),
-            # Also try absolute from root for non-relative
+            # Also try relative to project root
             potential_rel_path + ".py" if not is_relative else None,
         ]
         
@@ -118,16 +126,9 @@ class Normalizer:
         for cand in candidates:
             # Try to find a node with this path
             if cand in self.nodes:
-                return cand
+                return cand, candidates
             
-            # Also try relative to project root
-            # (In some cases import_source is relative to root but doesn't start with dot)
-            if not is_relative:
-                # This is tricky for python as it depends on PYTHONPATH
-                # For now assume root is in PYTHONPATH
-                pass
-
-        return None
+        return None, candidates
 
     def get_graph(self) -> NormalizedGraph:
         return NormalizedGraph(
