@@ -11,6 +11,12 @@ from app.core.orchestrator import Orchestrator
 from app.models.types import ViolationSeverity, NodeStatus
 
 def run_cli():
+    # Ensure current backend directory is in path and inherited by children
+    backend_path = os.path.abspath(os.path.join(os.getcwd(), 'backend'))
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+    os.environ["PYTHONPATH"] = backend_path + os.pathsep + os.environ.get("PYTHONPATH", "")
+
     parser = argparse.ArgumentParser(description="PheonixVirtualizer CI Gatekeeper")
     parser.add_argument("--path", type=str, default=".", help="Path to the repository to analyze")
     parser.add_argument("--fail-on", type=str, choices=["high", "medium", "low", "none"], default="high", 
@@ -20,8 +26,14 @@ def run_cli():
     args = parser.parse_args()
     
     print(f"--- PheonixVirtualizer Analysis Start ---")
-    orchestrator = Orchestrator(args.path)
-    graph = orchestrator.analyze()
+    try:
+        orchestrator = Orchestrator(args.path)
+        graph = orchestrator.analyze()
+    except Exception as e:
+        print(f"CRITICAL ERROR during analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
     
     violations = graph.violations
     
