@@ -1,14 +1,18 @@
 import networkx as nx
 import re
+import os
 from typing import List, Dict
 from ..models.types import (
     NormalizedGraph, GraphEdge, NodeStatus, 
     RelationType, ViolationSeverity, Violation, PheonixConfig
 )
+from .plugin_loader import load_plugins
 
 class RuleEngine:
     def __init__(self, config: PheonixConfig = PheonixConfig()):
         self.config = config
+        plugins_dir = os.path.join(os.path.dirname(__file__), "..", "..", "plugins")
+        self.plugins = load_plugins(plugins_dir)
 
     def evaluate(self, graph: NormalizedGraph) -> List[Violation]:
         violations = []
@@ -18,6 +22,13 @@ class RuleEngine:
         
         # 2. Custom Architectural Rules
         violations.extend(self._check_custom_rules(graph))
+        
+        # 3. Plugin Rules
+        for plugin in self.plugins:
+            try:
+                violations.extend(plugin.evaluate(graph))
+            except Exception as e:
+                print(f"Plugin error in {plugin.__class__.__name__}: {e}")
         
         return violations
 
@@ -64,29 +75,37 @@ class RuleEngine:
         for node in graph.nodes:
             G.add_node(node.id)
         for edge in graph.edges:
-            G.add_edge(edge.source, edge.target)
+            G.add_edge(edge.source, edge.target, edge_id=edge.id)
 
         cycles = list(nx.simple_cycles(G))
         for i, cycle in enumerate(cycles):
             # A cycle is a circular dependency
             message = f"Circular dependency detected: {' -> '.join(cycle)} -> {cycle[0]}"
+            
+            cycle_edge_ids = []
+            # Mark edges in cycle as WARNING and is_cycle=True
+            for j in range(len(cycle)):
+                source = cycle[j]
+                target = cycle[(j + 1) % len(cycle)]
+                
+                # Find the specific edge in the graph
+                # Note: If there are multiple edges between two nodes (rare for file imports), 
+                # we flag all of them.
+                for edge in graph.edges:
+                    if edge.source == source and edge.target == target:
+                        edge.status = NodeStatus.WARNING
+                        edge.is_cycle = True
+                        cycle_edge_ids.append(edge.id)
+
             violations.append(Violation(
                 id=f"circular-{i}",
                 ruleId="CIRCULAR_DEP",
                 severity=ViolationSeverity.medium,
                 message=message,
                 sourceNodeIds=cycle,
-                edgeIds=[], # Could be populated by finding the edges in G
+                edgeIds=list(set(cycle_edge_ids)),
                 status="active",
                 metadata={"cycle": cycle}
             ))
-
-            # Mark edges in cycle as WARNING in the original graph
-            for j in range(len(cycle)):
-                source = cycle[j]
-                target = cycle[(j + 1) % len(cycle)]
-                cycle_edge = next((e for e in graph.edges if e.source == source and e.target == target), None)
-                if cycle_edge:
-                    cycle_edge.status = NodeStatus.WARNING
         
         return violations

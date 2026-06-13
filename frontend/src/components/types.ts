@@ -1,0 +1,13 @@
+export enum NodeKind {
+  PROJECT = "PROJECT",
+  FOLDER = "FOLDER",
+  FILE = "FILE",
+  EXTERNAL_PACKAGE = "EXTERNAL_PACKAGE"
+}
+
+export enum NodeStatus {
+  VERIFIED = "VERIFIED",
+  BROKEN = "BROKEN",
+  WARNING = "WARNING",
+  UNRESOLVED = "UNRESOLVED"
+}

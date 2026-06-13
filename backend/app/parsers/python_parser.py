@@ -12,6 +12,26 @@ class PythonParser(BaseParser):
     def __init__(self):
         self.language = Language(tspython.language())
         self.parser = Parser(self.language)
+        
+        # Define queries for imports, exports, and symbols
+        self.query = self.language.query("""
+            (import_from_statement
+                module_name: (dotted_name) @import.module
+                (import_list
+                    (aliased_import
+                        name: (dotted_name) @import.symbol
+                        alias: (identifier)? @import.alias))?
+                (wildcard_import)? @import.wildcard) @import.from
+
+            (import_statement
+                (dotted_name) @import.module) @import.simple
+
+            (class_definition
+                name: (identifier) @export.class.name) @export.class
+
+            (function_definition
+                name: (identifier) @export.function.name) @export.function
+        """)
 
     def supports_language(self, language: str) -> bool:
         return language.lower() in ['python', 'py']
@@ -19,23 +39,77 @@ class PythonParser(BaseParser):
     def parse(self, request: ParseRequest) -> ParseResult:
         start_time = time.time()
         tree = self.parser.parse(bytes(request.content, "utf8"))
-        root_node = tree.root_node
-
+        
         imports = []
         exports = []
         symbols = []
         
-        # Simple traversal for demonstration
-        # We should use Tree-sitter queries for real work
-        self._traverse(root_node, imports, exports, symbols)
+        captures = self.query.captures(tree.root_node)
+        
+        # Group captures by parent node to handle complex statements
+        import_from_nodes = {}
+        
+        for node, tag in captures:
+            range_info = self._get_range(node)
+            
+            if tag == 'import.module':
+                # Handle both 'import X' and 'from X import ...'
+                # Find the top-level import statement
+                curr = node
+                while curr and curr.type not in ['import_statement', 'import_from_statement']:
+                    curr = curr.parent
+                
+                if curr and curr.type == 'import_statement':
+                    imports.append(ImportSymbol(
+                        source=node.text.decode('utf8'),
+                        range=range_info
+                    ))
+                elif curr and curr.type == 'import_from_statement':
+                    if curr not in import_from_nodes:
+                        import_from_nodes[curr] = {
+                            'source': node.text.decode('utf8'), 
+                            'symbols': [], 
+                            'range': self._get_range(curr)
+                        }
+
+            elif tag == 'import.symbol':
+                # Find the import_from_statement parent
+                curr = node
+                while curr and curr.type != 'import_from_statement':
+                    curr = curr.parent
+                if curr in import_from_nodes:
+                    import_from_nodes[curr]['symbols'].append(node.text.decode('utf8'))
+            
+            elif tag == 'import.wildcard':
+                if node in import_from_nodes:
+                    import_from_nodes[node]['symbols'].append('*')
+
+            elif tag == 'export.class.name':
+                name = node.text.decode('utf8')
+                exports.append(ExportSymbol(name=name, kind='class', range=range_info))
+                symbols.append(ParsedSymbol(name=name, kind='class', exported=True, range=range_info))
+            
+            elif tag == 'export.function.name':
+                name = node.text.decode('utf8')
+                exports.append(ExportSymbol(name=name, kind='function', range=range_info))
+                symbols.append(ParsedSymbol(name=name, kind='function', exported=True, range=range_info))
+
+        # Finalize import_from_statements
+        for node_data in import_from_nodes.values():
+            imports.append(ImportSymbol(
+                source=node_data['source'],
+                imported=node_data['symbols'] if node_data['symbols'] else None,
+                range=node_data['range']
+            ))
 
         duration_ms = (time.time() - start_time) * 1000
 
         metadata = FileParseMetadata(
-            parserVersion="0.1.0",
+            parserVersion="0.2.0",
             lineCount=len(request.content.splitlines()),
             byteSize=len(request.content.encode('utf-8')),
-            durationMs=duration_ms
+            durationMs=duration_ms,
+            hash=request.contentHash
         )
 
         return ParseResult(
@@ -48,68 +122,6 @@ class PythonParser(BaseParser):
             symbols=symbols,
             metadata=metadata
         )
-
-    def _traverse(self, node, imports, exports, symbols):
-        # Enhanced traversal for imports and exports
-        if node.type == 'import_from_statement':
-            # from X import Y, Z
-            module_node = node.child_by_field_name('module_name')
-            if module_node:
-                module_name = module_node.text.decode('utf8')
-                
-                # Extract specific imported symbols
-                imported_names = []
-                # Looking for 'dotted_name' or 'aliased_import' children
-                for child in node.children:
-                    if child.type == 'aliased_import':
-                        name_node = child.child_by_field_name('name')
-                        if name_node:
-                            imported_names.append(name_node.text.decode('utf8'))
-                    elif child.type == 'dotted_name' and child.prev_sibling and child.prev_sibling.type == 'import':
-                        # This matches the names after 'import'
-                        imported_names.append(child.text.decode('utf8'))
-                    elif child.type == 'wildcard_import':
-                        imported_names.append('*')
-
-                # Re-check for 'import' keyword to find siblings
-                import_found = False
-                for child in node.children:
-                    if child.type == 'import':
-                        import_found = True
-                        continue
-                    if import_found:
-                        if child.type == 'dotted_name':
-                            imported_names.append(child.text.decode('utf8'))
-                        elif child.type == 'aliased_import':
-                            name_node = child.child_by_field_name('name')
-                            if name_node:
-                                imported_names.append(name_node.text.decode('utf8'))
-
-                imports.append(ImportSymbol(
-                    source=module_name, 
-                    imported=list(set(imported_names)), 
-                    range=self._get_range(node)
-                ))
-        elif node.type == 'import_statement':
-            # import X
-            for child in node.children:
-                if child.type == 'dotted_name':
-                    imports.append(ImportSymbol(source=child.text.decode('utf8'), range=self._get_range(node)))
-        elif node.type == 'class_definition':
-            name_node = node.child_by_field_name('name')
-            if name_node:
-                name = name_node.text.decode('utf8')
-                exports.append(ExportSymbol(name=name, kind='class', range=self._get_range(node)))
-                symbols.append(ParsedSymbol(name=name, kind='class', exported=True, range=self._get_range(node)))
-        elif node.type == 'function_definition':
-            name_node = node.child_by_field_name('name')
-            if name_node:
-                name = name_node.text.decode('utf8')
-                exports.append(ExportSymbol(name=name, kind='function', range=self._get_range(node)))
-                symbols.append(ParsedSymbol(name=name, kind='function', exported=True, range=self._get_range(node)))
-
-        for child in node.children:
-            self._traverse(child, imports, exports, symbols)
 
     def _get_range(self, node) -> SourceRange:
         return SourceRange(

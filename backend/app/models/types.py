@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any, Union
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 class NodeKind(str, Enum):
     PROJECT = "PROJECT"
@@ -161,9 +161,15 @@ class GraphEdge(BaseModel):
     status: NodeStatus = NodeStatus.UNRESOLVED
     weight: float = 1.0
     confidence: float = 1.0
+    is_cycle: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class NormalizedGraph(BaseModel):
+    nodes: List[GraphNode] = Field(default_factory=list)
+    edges: List[GraphEdge] = Field(default_factory=list)
+    violations: List[Violation] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+raph(BaseModel):
     nodes: List[GraphNode] = Field(default_factory=list)
     edges: List[GraphEdge] = Field(default_factory=list)
     violations: List[Violation] = Field(default_factory=list)

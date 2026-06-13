@@ -1,6 +1,7 @@
 import os
 import hashlib
 from typing import List, Dict
+from .git_scanner import GitScanner
 from ..models.types import GraphNode, NodeKind, NodeStatus
 
 class RepositoryScanner:
@@ -9,6 +10,7 @@ class RepositoryScanner:
 
     def __init__(self, root_path: str):
         self.root_path = os.path.abspath(root_path)
+        self.git_scanner = GitScanner(self.root_path)
 
     def scan(self) -> List[GraphNode]:
         nodes = []
@@ -49,6 +51,7 @@ class RepositoryScanner:
                 rel_file_path = os.path.relpath(file_path, self.root_path)
                 
                 try:
+                    git_meta = self.git_scanner.get_file_metadata(rel_file_path)
                     nodes.append(GraphNode(
                         id=rel_file_path,
                         kind=NodeKind.FILE,
@@ -59,7 +62,10 @@ class RepositoryScanner:
                         size=os.path.getsize(file_path),
                         metadata={
                             "extension": os.path.splitext(file)[1],
-                            "mtime": os.path.getmtime(file_path)
+                            "mtime": os.path.getmtime(file_path),
+                            "churn": git_meta.get("churn", 0),
+                            "last_commit_date": git_meta.get("last_commit_date"),
+                            "last_commit_author": git_meta.get("last_commit_author")
                         }
                     ))
                 except (FileNotFoundError, OSError):

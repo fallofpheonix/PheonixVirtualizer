@@ -1,0 +1,8 @@
+[run]
+source = app
+omit =
+    app/api/*
+    app/main.py
+
+[report]
+fail_under = 80

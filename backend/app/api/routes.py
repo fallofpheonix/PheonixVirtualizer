@@ -20,6 +20,7 @@ async def analyze_repository(path: str, background_tasks: BackgroundTasks):
     jobs[job_id] = {
         "status": "processing",
         "projectName": os.path.basename(path),
+        "path": path,
         "graph": None,
         "errors": []
     }
@@ -113,6 +114,32 @@ async def analyze_violation_with_ai(job_id: str, violation_id: str):
     # Find affected nodes
     affected_nodes = [n for n in full_graph.nodes if n.id in violation.sourceNodeIds]
     
-    analysis = await ai_reasoning_service.analyze_violation(violation, affected_nodes)
+    # Get project root from job if available, or fallback to current dir
+    project_root = jobs[job_id].get("path", os.getcwd())
+    
+    analysis = await ai_reasoning_service.analyze_violation(violation, affected_nodes, project_root)
     
     return {"analysis": analysis}
+
+@router.post("/job/{job_id}/snapshot")
+async def create_snapshot(job_id: str):
+    if job_id not in jobs or jobs[job_id]["status"] != "complete":
+        raise HTTPException(status_code=404, detail="Job not found or processing")
+    
+    from ..core.database import Database
+    db = Database()
+    project_id = "default-project"
+    graph = jobs[job_id]["graph"]
+    
+    snapshot_id = db.create_snapshot(project_id, graph)
+    return {"snapshotId": snapshot_id, "status": "captured"}
+
+@router.get("/job/{job_id}/trends")
+async def get_trends(job_id: str):
+    # Trends are project-wide, so we use the project_id
+    from ..core.database import Database
+    db = Database()
+    project_id = "default-project"
+    
+    snapshots = db.get_snapshots(project_id)
+    return {"snapshots": snapshots}

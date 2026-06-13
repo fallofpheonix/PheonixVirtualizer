@@ -12,6 +12,14 @@ class GoParser(BaseParser):
     def __init__(self):
         self.language = Language(tsgo.language())
         self.parser = Parser(self.language)
+        
+        self.query = self.language.query("""
+            (import_spec path: (interpreted_string_literal) @import.source) @import
+
+            (function_declaration name: (identifier) @symbol.name) @symbol.function
+            (type_spec name: (type_identifier) @symbol.name) @symbol.type
+            (method_declaration name: (field_identifier) @symbol.name) @symbol.method
+        """)
 
     def supports_language(self, language: str) -> bool:
         return language.lower() in ['go']
@@ -19,21 +27,37 @@ class GoParser(BaseParser):
     def parse(self, request: ParseRequest) -> ParseResult:
         start_time = time.time()
         tree = self.parser.parse(bytes(request.content, "utf8"))
-        root_node = tree.root_node
-
+        
         imports = []
         exports = []
         symbols = []
         
-        self._traverse(root_node, imports, exports, symbols)
+        captures = self.query.captures(tree.root_node)
+        
+        for node, tag in captures:
+            range_info = self._get_range(node)
+            text = node.text.decode('utf8')
+            
+            if tag == 'import.source':
+                source = text.strip("'\"")
+                imports.append(ImportSymbol(source=source, range=range_info))
+            
+            elif tag.startswith('symbol.name'):
+                kind = tag.split('.')[-1]
+                # In Go, exported names start with uppercase
+                is_exported = text[0].isupper() if text else False
+                if is_exported:
+                    exports.append(ExportSymbol(name=text, kind=kind, range=range_info))
+                symbols.append(ParsedSymbol(name=text, kind=kind, exported=is_exported, range=range_info))
 
         duration_ms = (time.time() - start_time) * 1000
 
         metadata = FileParseMetadata(
-            parserVersion="0.1.0",
+            parserVersion="0.2.0",
             lineCount=len(request.content.splitlines()),
             byteSize=len(request.content.encode('utf-8')),
-            durationMs=duration_ms
+            durationMs=duration_ms,
+            hash=request.contentHash
         )
 
         return ParseResult(
@@ -46,40 +70,6 @@ class GoParser(BaseParser):
             symbols=symbols,
             metadata=metadata
         )
-
-    def _traverse(self, node, imports, exports, symbols):
-        # Go specific traversal
-        if node.type == 'import_spec':
-            # import "x" or import y "x"
-            path_node = node.child_by_field_name('path')
-            if path_node:
-                source = path_node.text.decode('utf8').strip("'\"")
-                imports.append(ImportSymbol(source=source, range=self._get_range(node)))
-        
-        elif node.type == 'function_declaration':
-            name_node = node.child_by_field_name('name')
-            if name_node:
-                name = name_node.text.decode('utf8')
-                # In Go, exported names start with uppercase
-                is_exported = name[0].isupper() if name else False
-                if is_exported:
-                    exports.append(ExportSymbol(name=name, kind='function', range=self._get_range(node)))
-                symbols.append(ParsedSymbol(name=name, kind='function', exported=is_exported, range=self._get_range(node)))
-
-        elif node.type == 'type_declaration':
-            # type X struct or type X interface
-            for child in node.children:
-                if child.type == 'type_spec':
-                    name_node = child.child_by_field_name('name')
-                    if name_node:
-                        name = name_node.text.decode('utf8')
-                        is_exported = name[0].isupper() if name else False
-                        if is_exported:
-                            exports.append(ExportSymbol(name=name, kind='type', range=self._get_range(node)))
-                        symbols.append(ParsedSymbol(name=name, kind='type', exported=is_exported, range=self._get_range(node)))
-
-        for child in node.children:
-            self._traverse(child, imports, exports, symbols)
 
     def _get_range(self, node) -> SourceRange:
         return SourceRange(

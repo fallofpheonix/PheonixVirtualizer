@@ -12,6 +12,40 @@ class JavaScriptParser(BaseParser):
     def __init__(self):
         self.language = Language(tsjs.language())
         self.parser = Parser(self.language)
+        
+        self.query = self.language.query("""
+            (import_statement
+                source: (string) @import.source) @import
+
+            (import_clause
+                (named_imports
+                    (import_specifier
+                        name: (identifier) @import.symbol)))
+
+            (import_clause
+                (namespace_import
+                    (identifier) @import.symbol))
+
+            (import_clause
+                (identifier) @import.symbol)
+
+            (call_expression
+                function: (identifier) @require_func
+                arguments: (arguments (string) @import.source)
+                (#eq? @require_func "require")) @import.require
+
+            (export_statement
+                declaration: (function_declaration name: (identifier) @export.name)) @export.function
+
+            (export_statement
+                declaration: (class_declaration name: (identifier) @export.name)) @export.class
+
+            (export_statement
+                declaration: (lexical_declaration (variable_declarator name: (identifier) @export.name))) @export.variable
+
+            (class_declaration name: (identifier) @symbol.name) @symbol.class
+            (function_declaration name: (identifier) @symbol.name) @symbol.function
+        """)
 
     def supports_language(self, language: str) -> bool:
         return language.lower() in ['javascript', 'js']
@@ -19,21 +53,64 @@ class JavaScriptParser(BaseParser):
     def parse(self, request: ParseRequest) -> ParseResult:
         start_time = time.time()
         tree = self.parser.parse(bytes(request.content, "utf8"))
-        root_node = tree.root_node
-
+        
         imports = []
         exports = []
         symbols = []
         
-        self._traverse(root_node, imports, exports, symbols)
+        captures = self.query.captures(tree.root_node)
+        
+        import_nodes = {}
+        
+        for node, tag in captures:
+            range_info = self._get_range(node)
+            text = node.text.decode('utf8')
+            
+            if tag == 'import.source':
+                # ESM or CommonJS
+                source = text.strip("'\"")
+                curr = node
+                while curr and curr.type not in ['import_statement', 'call_expression']:
+                    curr = curr.parent
+                
+                if curr not in import_nodes:
+                    import_nodes[curr] = {'source': source, 'symbols': [], 'range': self._get_range(curr)}
+                else:
+                    import_nodes[curr]['source'] = source
+
+            elif tag == 'import.symbol':
+                curr = node
+                while curr and curr.type != 'import_statement':
+                    curr = curr.parent
+                if curr in import_nodes:
+                    import_nodes[curr]['symbols'].append(text)
+
+            elif tag.startswith('export.name'):
+                kind = tag.split('.')[-1]
+                exports.append(ExportSymbol(name=text, kind=kind, range=range_info))
+                symbols.append(ParsedSymbol(name=text, kind=kind, exported=True, range=range_info))
+
+            elif tag.startswith('symbol.name'):
+                kind = tag.split('.')[-1]
+                # Only add if not already added as export
+                if not any(e.name == text for e in exports):
+                    symbols.append(ParsedSymbol(name=text, kind=kind, exported=False, range=range_info))
+
+        for imp_data in import_nodes.values():
+            imports.append(ImportSymbol(
+                source=imp_data['source'],
+                imported=imp_data['symbols'] if imp_data['symbols'] else None,
+                range=imp_data['range']
+            ))
 
         duration_ms = (time.time() - start_time) * 1000
 
         metadata = FileParseMetadata(
-            parserVersion="0.1.0",
+            parserVersion="0.2.0",
             lineCount=len(request.content.splitlines()),
             byteSize=len(request.content.encode('utf-8')),
-            durationMs=duration_ms
+            durationMs=duration_ms,
+            hash=request.contentHash
         )
 
         return ParseResult(
@@ -46,42 +123,6 @@ class JavaScriptParser(BaseParser):
             symbols=symbols,
             metadata=metadata
         )
-
-    def _traverse(self, node, imports, exports, symbols):
-        if node.type == 'import_statement':
-            # import X from 'Y'
-            source_node = node.child_by_field_name('source')
-            if source_node:
-                # Remove quotes
-                source = source_node.text.decode('utf8').strip("'\"")
-                imports.append(ImportSymbol(source=source, range=self._get_range(node)))
-        elif node.type == 'lexical_declaration':
-            # const X = require('Y')
-            for child in node.children:
-                if child.type == 'variable_declarator':
-                    value_node = child.child_by_field_name('value')
-                    if value_node and value_node.type == 'call_expression':
-                        function_node = value_node.child_by_field_name('function')
-                        if function_node and function_node.text.decode('utf8') == 'require':
-                            args = value_node.child_by_field_name('arguments')
-                            if args and len(args.children) > 1:
-                                source = args.children[1].text.decode('utf8').strip("'\"")
-                                imports.append(ImportSymbol(source=source, range=self._get_range(node)))
-        elif node.type == 'class_declaration':
-            name_node = node.child_by_field_name('name')
-            if name_node:
-                name = name_node.text.decode('utf8')
-                exports.append(ExportSymbol(name=name, kind='class', range=self._get_range(node)))
-                symbols.append(ParsedSymbol(name=name, kind='class', exported=True, range=self._get_range(node)))
-        elif node.type == 'function_declaration':
-            name_node = node.child_by_field_name('name')
-            if name_node:
-                name = name_node.text.decode('utf8')
-                exports.append(ExportSymbol(name=name, kind='function', range=self._get_range(node)))
-                symbols.append(ParsedSymbol(name=name, kind='function', exported=True, range=self._get_range(node)))
-
-        for child in node.children:
-            self._traverse(child, imports, exports, symbols)
 
     def _get_range(self, node) -> SourceRange:
         return SourceRange(

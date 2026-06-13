@@ -12,7 +12,6 @@ from ..models.types import ParseRequest, NormalizedGraph, ParseResult
 
 def _parse_file_worker(file_info: Dict[str, Any], project_root: str) -> Optional[ParseResult]:
     """Worker function for multiprocessing."""
-    # Initialize parser factory in each worker to avoid pickling issues
     factory = ParserFactory()
     lang = file_info['lang']
     parser = factory.get_parser(lang)
@@ -29,7 +28,7 @@ def _parse_file_worker(file_info: Dict[str, Any], project_root: str) -> Optional
             path=file_info['path'],
             language=lang,
             content=content,
-            contentHash="hash", # Should ideally be pre-calculated
+            contentHash=file_info['hash'],
             version=1,
             projectRoot=project_root
         )
@@ -48,15 +47,20 @@ class Orchestrator:
         self.db = Database()
 
     def analyze(self) -> NormalizedGraph:
+        project_id = "default-project"
         print(f"Scanning repository: {self.project_root}")
         nodes = self.scanner.scan()
         self.normalizer.add_nodes(nodes)
 
         file_nodes = [n for n in nodes if n.kind == "FILE"]
-        print(f"Found {len(file_nodes)} files. Starting parallel parsing...")
+        print(f"Found {len(file_nodes)} files. Checking cache...")
 
-        # Prepare tasks for workers
+        cached_hashes = self.db.get_file_cache(project_id)
+        current_files = [n.path for n in file_nodes]
+        self.db.clear_stale_cache(project_id, current_files)
+
         tasks = []
+        parse_results = []
         lang_map = {
             '.py': 'python', 
             '.js': 'javascript', 
@@ -64,28 +68,50 @@ class Orchestrator:
             '.tsx': 'typescript',
             '.go': 'go'
         }
+
         for file_node in file_nodes:
             ext = os.path.splitext(file_node.label)[1].lower()
             lang = lang_map.get(ext)
-            if lang:
-                tasks.append({
-                    'id': file_node.id,
-                    'path': file_node.path,
-                    'lang': lang
-                })
+            if not lang:
+                continue
 
-        # Execute parsing in parallel
-        results = []
-        with ProcessPoolExecutor() as executor:
-            # Using map or submit
-            futures = [executor.submit(_parse_file_worker, task, self.project_root) for task in tasks]
-            for future in futures:
-                result = future.result()
-                if result:
-                    results.append(result)
+            abs_path = os.path.join(self.project_root, file_node.path)
+            try:
+                current_hash = self.scanner.get_file_hash(abs_path)
+            except Exception:
+                continue
+            
+            if file_node.path in cached_hashes and cached_hashes[file_node.path] == current_hash:
+                cached_json = self.db.get_parse_result(project_id, file_node.path)
+                if cached_json:
+                    try:
+                        res = ParseResult.model_validate_json(cached_json)
+                        res.metadata.wasIncremental = True
+                        parse_results.append(res)
+                        continue
+                    except Exception:
+                        pass
 
-        print(f"Parsing complete. Processing {len(results)} results...")
-        for result in results:
+            tasks.append({
+                'id': file_node.id,
+                'path': file_node.path,
+                'lang': lang,
+                'hash': current_hash
+            })
+
+        if tasks:
+            print(f"Parsing {len(tasks)} changed files...")
+            with ProcessPoolExecutor() as executor:
+                futures = [executor.submit(_parse_file_worker, task, self.project_root) for task in tasks]
+                for future in futures:
+                    result = future.result()
+                    if result:
+                        parse_results.append(result)
+                        # Save to cache
+                        self.db.save_parse_result(project_id, result.path, result.metadata.hash, result.model_dump_json())
+
+        print(f"Processing {len(parse_results)} results...")
+        for result in parse_results:
             self.normalizer.process_parse_result(result)
 
         graph = self.normalizer.get_graph()
@@ -95,7 +121,7 @@ class Orchestrator:
         graph.violations = violations
 
         print("Saving graph to database...")
-        self.db.save_graph("default-project", "Default Project", self.project_root, graph)
+        self.db.save_graph(project_id, "Default Project", self.project_root, graph)
 
         print("Analysis complete.")
         return graph

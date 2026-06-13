@@ -14,6 +14,46 @@ class TypeScriptParser(BaseParser):
         self.ts_language = Language(tstypescript.language_typescript())
         self.tsx_language = Language(tstypescript.language_tsx())
         self.parser = Parser(self.ts_language)
+        
+        # Define shared query for TS and TSX
+        self.query_src = """
+            (import_statement
+                source: (string) @import.source) @import
+
+            (import_clause
+                (named_imports
+                    (import_specifier
+                        name: (identifier) @import.symbol)))
+
+            (import_clause
+                (namespace_import
+                    (identifier) @import.symbol))
+
+            (import_clause
+                (identifier) @import.symbol)
+
+            (export_statement
+                declaration: (function_declaration name: (identifier) @export.name)) @export.function
+
+            (export_statement
+                declaration: (class_declaration name: (identifier) @export.name)) @export.class
+
+            (export_statement
+                declaration: (interface_declaration name: (identifier) @export.name)) @export.interface
+
+            (export_statement
+                declaration: (enum_declaration name: (identifier) @export.name)) @export.enum
+
+            (export_statement
+                declaration: (lexical_declaration (variable_declarator name: (identifier) @export.name))) @export.variable
+
+            (class_declaration name: (identifier) @symbol.name) @symbol.class
+            (function_declaration name: (identifier) @symbol.name) @symbol.function
+            (interface_declaration name: (identifier) @symbol.name) @symbol.interface
+            (enum_declaration name: (identifier) @symbol.name) @symbol.enum
+        """
+        self.ts_query = self.ts_language.query(self.query_src)
+        self.tsx_query = self.tsx_language.query(self.query_src)
 
     def supports_language(self, language: str) -> bool:
         return language.lower() in ['typescript', 'ts', 'tsx']
@@ -21,28 +61,68 @@ class TypeScriptParser(BaseParser):
     def parse(self, request: ParseRequest) -> ParseResult:
         start_time = time.time()
         
-        # Switch language if it's TSX
+        # Switch language and query if it's TSX
         if request.path.endswith('.tsx') or request.language.lower() == 'tsx':
             self.parser.language = self.tsx_language
+            query = self.tsx_query
         else:
             self.parser.language = self.ts_language
+            query = self.ts_query
             
         tree = self.parser.parse(bytes(request.content, "utf8"))
-        root_node = tree.root_node
-
+        
         imports = []
         exports = []
         symbols = []
         
-        self._traverse(root_node, imports, exports, symbols)
+        captures = query.captures(tree.root_node)
+        import_nodes = {}
+        
+        for node, tag in captures:
+            range_info = self._get_range(node)
+            text = node.text.decode('utf8')
+            
+            if tag == 'import.source':
+                source = text.strip("'\"")
+                curr = node
+                while curr and curr.type != 'import_statement':
+                    curr = curr.parent
+                
+                if curr not in import_nodes:
+                    import_nodes[curr] = {'source': source, 'symbols': [], 'range': self._get_range(curr)}
+
+            elif tag == 'import.symbol':
+                curr = node
+                while curr and curr.type != 'import_statement':
+                    curr = curr.parent
+                if curr in import_nodes:
+                    import_nodes[curr]['symbols'].append(text)
+
+            elif tag.startswith('export.name'):
+                kind = tag.split('.')[-1]
+                exports.append(ExportSymbol(name=text, kind=kind, range=range_info))
+                symbols.append(ParsedSymbol(name=text, kind=kind, exported=True, range=range_info))
+
+            elif tag.startswith('symbol.name'):
+                kind = tag.split('.')[-1]
+                if not any(e.name == text for e in exports):
+                    symbols.append(ParsedSymbol(name=text, kind=kind, exported=False, range=range_info))
+
+        for imp_data in import_nodes.values():
+            imports.append(ImportSymbol(
+                source=imp_data['source'],
+                imported=imp_data['symbols'] if imp_data['symbols'] else None,
+                range=imp_data['range']
+            ))
 
         duration_ms = (time.time() - start_time) * 1000
 
         metadata = FileParseMetadata(
-            parserVersion="0.1.0",
+            parserVersion="0.2.0",
             lineCount=len(request.content.splitlines()),
             byteSize=len(request.content.encode('utf-8')),
-            durationMs=duration_ms
+            durationMs=duration_ms,
+            hash=request.contentHash
         )
 
         return ParseResult(
@@ -55,69 +135,6 @@ class TypeScriptParser(BaseParser):
             symbols=symbols,
             metadata=metadata
         )
-
-    def _traverse(self, node, imports, exports, symbols):
-        # TypeScript specific traversal
-        if node.type == 'import_statement':
-            # import { x } from 'y'
-            source_node = node.child_by_field_name('source')
-            if source_node:
-                source = source_node.text.decode('utf8').strip("'\"")
-                
-                # Extract specific symbols
-                imported_symbols = []
-                clause = node.child_by_field_name('import_clause')
-                if clause:
-                    # named_imports: { a, b as c }
-                    named = clause.named_children[0] if clause.named_children else None
-                    if named and named.type == 'named_imports':
-                        for specifier in named.named_children:
-                            # specifier can be 'import_specifier'
-                            name_node = specifier.child_by_field_name('name')
-                            if name_node:
-                                imported_symbols.append(name_node.text.decode('utf8'))
-                    # namespace_import: * as x
-                    elif clause.named_children and clause.named_children[0].type == 'namespace_import':
-                        imported_symbols.append('*')
-                
-                imports.append(ImportSymbol(
-                    source=source, 
-                    imported=imported_symbols, 
-                    range=self._get_range(node)
-                ))
-        
-        elif node.type == 'export_statement':
-            # export const x = ... or export function x() ...
-            declaration = node.child_by_field_name('declaration')
-            if declaration:
-                if declaration.type == 'function_declaration':
-                    name_node = declaration.child_by_field_name('name')
-                    if name_node:
-                        name = name_node.text.decode('utf8')
-                        exports.append(ExportSymbol(name=name, kind='function', range=self._get_range(node)))
-                elif declaration.type == 'class_declaration':
-                    name_node = declaration.child_by_field_name('name')
-                    if name_node:
-                        name = name_node.text.decode('utf8')
-                        exports.append(ExportSymbol(name=name, kind='class', range=self._get_range(node)))
-                elif declaration.type in ['variable_declaration', 'lexical_declaration']:
-                    # export const x = 1, y = 2
-                    for child in declaration.children:
-                        if child.type == 'variable_declarator':
-                            name_node = child.child_by_field_name('name')
-                            if name_node:
-                                name = name_node.text.decode('utf8')
-                                exports.append(ExportSymbol(name=name, kind='variable', range=self._get_range(node)))
-
-        elif node.type in ['class_declaration', 'interface_declaration', 'enum_declaration']:
-            name_node = node.child_by_field_name('name')
-            if name_node:
-                name = name_node.text.decode('utf8')
-                kind = node.type.replace('_declaration', '')
-                symbols.append(ParsedSymbol(name=name, kind=kind, exported=False, range=self._get_range(node)))
-
-        for child in node.children:
-            self._traverse(child, imports, exports, symbols)
 
     def _get_range(self, node) -> SourceRange:
         return SourceRange(

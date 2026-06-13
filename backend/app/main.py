@@ -1,13 +1,45 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
+from collections import defaultdict
 import asyncio
 import os
+import time
 from .api.routes import router
 from .api.websocket import manager
 from .core.watcher import LiveWatcher
 from .core.orchestrator import Orchestrator
 
 app = FastAPI(title="PheonixVirtualization API")
+
+# Simple rate limiter: 100 requests per minute per IP
+rate_limit_records = defaultdict(list)
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    # Clean old records (older than 60s)
+    rate_limit_records[client_ip] = [t for t in rate_limit_records[client_ip] if now - t < 60]
+    
+    if len(rate_limit_records[client_ip]) >= 100:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Too Many Requests: Rate limit exceeded"}
+        )
+    
+    rate_limit_records[client_ip].append(now)
+    return await call_next(request)
+
+# Security: API Key requirement
+API_KEY = os.getenv("PHEONIX_API_KEY", "dev-key-12345")
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
 
 # Global instances for the watcher
 watcher = None
@@ -34,6 +66,8 @@ async def shutdown_event():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # For WebSockets, we can check a token in query params or headers
+    # manager.connect already handled basic connection
     await manager.connect(websocket)
     try:
         while True:
@@ -42,20 +76,28 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# Enable CORS for frontend integration
+# Security: CORS Hardening
+# In development, restrict to Vite's default port.
+# In production, this should be set via environment variable.
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to the frontend URL
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(router, prefix="/api")
+# Protect all API routes with the API Key dependency
+app.include_router(router, prefix="/api", dependencies=[Depends(verify_api_key)])
 
 @app.get("/")
 async def root():
-    return {"message": "PheonixVirtualization API is running"}
+    return {"message": "PheonixVirtualization API is running", "status": "secure"}
 
 if __name__ == "__main__":
     import uvicorn
